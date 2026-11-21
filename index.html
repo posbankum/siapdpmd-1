@@ -414,11 +414,11 @@
         <button id="pjlp-tab-btn-rekap-kinerja" onclick="switchPjlpTab('rekap-kinerja')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
           <i class="fa-solid fa-file-invoice"></i> Rekap Kinerja Bulanan
         </button>
-        <button id="pjlp-tab-btn-arsip" onclick="switchPjlpTab('arsip')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
-          <i class="fa-solid fa-folder-open"></i> Arsip Kepegawaian
-        </button>
         <button id="pjlp-tab-btn-final" onclick="switchPjlpTab('final')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
           <i class="fa-solid fa-award"></i> Penilaian Kinerja Final Tahunan
+        </button>
+        <button id="pjlp-tab-btn-arsip" onclick="switchPjlpTab('arsip')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
+          <i class="fa-solid fa-folder-open"></i> Arsip Kepegawaian
         </button>
       </div>
 
@@ -4602,6 +4602,13 @@
         if (statusFilter !== 'Semua' && l.status !== statusFilter) return false;
         if (searchKey && !String(l.kegiatan || '').toLowerCase().includes(searchKey) && owner && !String(owner.nama || '').toLowerCase().includes(searchKey)) return false;
         return true;
+      }).sort((a,b) => {
+        // Prioritaskan laporan Pending (belum diverifikasi), lalu terbaru ke terlama.
+        const pendingDiff = (String(b.status || 'Pending') === 'Pending') - (String(a.status || 'Pending') === 'Pending');
+        if (pendingDiff) return pendingDiff;
+        const dateDiff = String(dateKeyISO(b.tanggal) || '').localeCompare(String(dateKeyISO(a.tanggal) || ''));
+        if (dateDiff) return dateDiff;
+        return String(b.jamMulai || '').localeCompare(String(a.jamMulai || ''));
       });
       filteredReports.forEach((l, index) => {
         const owner = dbUsers.find(u => u.id === l.userId);
@@ -4813,7 +4820,14 @@
         if (filterStatus !== 'Semua' && l.status !== filterStatus) return false;
         if (searchKey && !String(l.kegiatan || '').toLowerCase().includes(searchKey) && !String(l.output || '').toLowerCase().includes(searchKey) && !String(owner.nama || '').toLowerCase().includes(searchKey)) return false;
         return true;
-      }).sort((a,b) => String(b.tanggal || '').localeCompare(String(a.tanggal || '')));
+      }).sort((a,b) => {
+        // Prioritaskan laporan Pending (belum diverifikasi), lalu terbaru ke terlama.
+        const pendingDiff = (String(b.status || 'Pending') === 'Pending') - (String(a.status || 'Pending') === 'Pending');
+        if (pendingDiff) return pendingDiff;
+        const dateDiff = String(dateKeyISO(b.tanggal) || '').localeCompare(String(dateKeyISO(a.tanggal) || ''));
+        if (dateDiff) return dateDiff;
+        return String(b.jamMulai || '').localeCompare(String(a.jamMulai || ''));
+      });
       if (!rows.length) {
         tbody.innerHTML = '<tr><td colspan="8" class="p-6 text-center text-slate-400">Tidak ada laporan yang sesuai dengan filter pegawai, bulan, dan status.</td></tr>';
         return;
