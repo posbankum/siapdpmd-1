@@ -414,11 +414,11 @@
         <button id="pjlp-tab-btn-rekap-kinerja" onclick="switchPjlpTab('rekap-kinerja')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
           <i class="fa-solid fa-file-invoice"></i> Rekap Kinerja Bulanan
         </button>
-        <button id="pjlp-tab-btn-arsip" onclick="switchPjlpTab('arsip')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
-          <i class="fa-solid fa-folder-open"></i> Arsip Kepegawaian
-        </button>
         <button id="pjlp-tab-btn-final" onclick="switchPjlpTab('final')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
           <i class="fa-solid fa-award"></i> Penilaian Kinerja Final Tahunan
+        </button>
+        <button id="pjlp-tab-btn-arsip" onclick="switchPjlpTab('arsip')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
+          <i class="fa-solid fa-folder-open"></i> Arsip Kepegawaian
         </button>
       </div>
 
@@ -2911,9 +2911,21 @@
       return (rows || []).filter(row => { const key=dateKeyISO(row.tanggal); return (!from || key >= from) && (!to || key <= to); });
     }
     function countDpmDWorkdaysBetween(from, to) {
-      if (!from || !to || from > to) return 0;
-      const a=new Date(from+'T12:00:00'), b=new Date(to+'T12:00:00'); let count=0;
-      for (let d=new Date(a); d<=b; d.setDate(d.getDate()+1)) if (isDpmDWorkday(d)) count++;
+      // Hitung rentang inklusif lintas bulan/tahun menggunakan UTC agar tidak
+      // terpengaruh pergeseran timezone atau perubahan jam lokal.
+      const start = String(from || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      const end = String(to || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!start || !end || String(from) > String(to)) return 0;
+      let cursor = Date.UTC(Number(start[1]), Number(start[2])-1, Number(start[3]));
+      const finish = Date.UTC(Number(end[1]), Number(end[2])-1, Number(end[3]));
+      let count = 0;
+      for (; cursor <= finish; cursor += 86400000) {
+        const d = new Date(cursor);
+        const weekday = d.getUTCDay();
+        if (weekday === 0 || weekday === 6) continue; // Minggu/Sabtu
+        const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+        if (!isOfficialDayOff(key)) count++;
+      }
       return count;
     }
     function formatKinerjaDateRange(monthKey) {
@@ -2928,7 +2940,10 @@
       const monthAttendance = monthKeyFromSelect('rekap-bulan-hadir-select');
       const monthReports = monthKeyFromSelect('rekap-bulan-kinerja-select');
       const attendanceRows = applyDateFilter(myAbsensi.filter(a => isInMonth(a.tanggal, monthAttendance)), 'filter-rekap-hadir-tanggal').sort((a,b) => `${dateKeyISO(a.tanggal)} ${a.jam}`.localeCompare(`${dateKeyISO(b.tanggal)} ${b.jam}`));
-      const reportRows = applyKinerjaDateRange(myLaporan.filter(r => isInMonth(r.tanggal, monthReports))).sort((a,b) => dateKeyISO(a.tanggal).localeCompare(dateKeyISO(b.tanggal)) || String(a.jamMulai||'').localeCompare(String(b.jamMulai||'')));
+      const selectedKinerjaRange = getKinerjaDateRange();
+      const hasKinerjaDateRange = !!(selectedKinerjaRange.from || selectedKinerjaRange.to);
+      const reportBaseRows = hasKinerjaDateRange ? myLaporan : myLaporan.filter(r => isInMonth(r.tanggal, monthReports));
+      const reportRows = applyKinerjaDateRange(reportBaseRows).sort((a,b) => dateKeyISO(a.tanggal).localeCompare(dateKeyISO(b.tanggal)) || String(a.jamMulai||'').localeCompare(String(b.jamMulai||'')));
       const formatMonth = key => {
         const [y,m] = key.split('-').map(Number);
         return new Intl.DateTimeFormat('id-ID',{month:'long',year:'numeric',timeZone:'Asia/Makassar'}).format(new Date(y,m-1,1));
@@ -2942,9 +2957,10 @@
       const [krYear,krMonth] = monthReports.split('-').map(Number);
       const monthStart = `${monthReports}-01`;
       const monthEnd = `${monthReports}-${String(new Date(krYear,krMonth,0).getDate()).padStart(2,'0')}`;
-      const rangeStart = kinerjaRange.from ? (kinerjaRange.from < monthStart ? monthStart : kinerjaRange.from) : monthStart;
-      const rangeEnd = kinerjaRange.to ? (kinerjaRange.to > monthEnd ? monthEnd : kinerjaRange.to) : monthEnd;
-      const rangeWorkdays = (kinerjaRange.from || kinerjaRange.to) ? countDpmDWorkdaysBetween(rangeStart,rangeEnd) : workdaysInMonth(monthReports);
+      // Jika rentang tanggal dipilih, hitung hari kerja pada rentang penuh (tidak dipotong bulan pilihan).
+      const rangeStart = kinerjaRange.from || monthStart;
+      const rangeEnd = kinerjaRange.to || monthEnd;
+      const rangeWorkdays = hasKinerjaDateRange ? countDpmDWorkdaysBetween(rangeStart,rangeEnd) : workdaysInMonth(monthReports);
       if (kinerjaWorkdayEl) kinerjaWorkdayEl.textContent = `${rangeWorkdays} Hari`;
       const hadirMasukDays = new Set(attendanceRows.filter(a => a.sesi === 'Masuk' && a.status === 'Hadir' && isDpmDWorkdayKey(dateKeyISO(a.tanggal))).map(a => dateKeyISO(a.tanggal))).size;
       const hadirCount = document.getElementById('rekap-hadir-count');
@@ -3342,7 +3358,17 @@
         const photo = currentUser.avatar ? `<img src="${escapeHTML(currentUser.avatar)}" alt="Foto pegawai">` : '';
         const safe = v => escapeHTML(v || '—');
         const profile = `<section class="rekap-pegawai">${photo}<div class="rekap-pegawai-details"><div><b>Nama Pegawai:</b> ${safe(currentUser.nama)}</div><div><b>NIK:</b> ${safe(currentUser.nik)}</div><div><b>Bidang/Sub Bagian Kerja:</b> ${safe(currentUser.bidang)}</div><div><b>Tugas / Jabatan Kontrak:</b> ${safe(currentUser.jabatan)}</div></div></section>`;
-        const meta = `<section class="rekap-meta-grid"><div class="rekap-meta-item"><div class="rekap-meta-label">Periode Rekap</div><div class="rekap-meta-value">${safe(periode)}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Total Hari Kerja</div><div class="rekap-meta-value">${safe(document.getElementById("rekap-kinerja-hari-kerja-count")?.textContent?.trim() || "—")}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Laporan Disetujui</div><div class="rekap-meta-value">${safe(approved)}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Nilai Kinerja</div><div class="rekap-meta-value">${safe(status)}</div></div></section>`;
+        const kinerjaRangeForPrint = getKinerjaDateRange();
+        const monthKeyForPrint = monthKeyFromSelect('rekap-bulan-kinerja-select');
+        const [printYear, printMonth] = monthKeyForPrint.split('-').map(Number);
+        const printMonthStart = `${monthKeyForPrint}-01`;
+        const printMonthEnd = `${monthKeyForPrint}-${String(new Date(printYear,printMonth,0).getDate()).padStart(2,'0')}`;
+        const printRangeStart = kinerjaRangeForPrint.from || printMonthStart;
+        const printRangeEnd = kinerjaRangeForPrint.to || printMonthEnd;
+        const printWorkdays = (kinerjaRangeForPrint.from || kinerjaRangeForPrint.to)
+          ? countDpmDWorkdaysBetween(printRangeStart, printRangeEnd)
+          : workdaysInMonth(monthKeyForPrint);
+        const meta = `<section class="rekap-meta-grid"><div class="rekap-meta-item"><div class="rekap-meta-label">Periode Rekap</div><div class="rekap-meta-value">${safe(periode)}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Total Hari Kerja</div><div class="rekap-meta-value">${safe(`${printWorkdays} Hari`)}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Laporan Disetujui</div><div class="rekap-meta-value">${safe(approved)}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Nilai Kinerja</div><div class="rekap-meta-value">${safe(status)}</div></div></section>`;
         const bidangAsli = String(currentUser.bidang || '').trim();
         const bidangPegawai = bidangAsli.toLowerCase().replace(/\\s+/g, ' ');
         const verifikatorBidang = (dbUsers || []).find(u =>
@@ -3374,7 +3400,7 @@
       w.document.open();
       w.document.write(`<!doctype html><html lang="id"><head><meta charset="utf-8"><title>${escapeHTML(title)}</title><style>
         @page{size:A4 portrait;margin:12mm 12mm 24mm} body{font:11pt Arial,sans-serif;color:#111;background:#fff;margin:0} .kop{display:flex;align-items:center;gap:14px;border-bottom:4px double #111;padding-bottom:10px;margin-bottom:18px}.kop img{width:76px;height:76px;object-fit:contain;flex:0 0 76px}.kop img.print-logo-right{margin-left:10px}.kop .print-kop-text{flex:1;text-align:center}.kop h2{font-size:13pt;text-transform:uppercase;margin:0}.kop h1{font-size:15pt;text-transform:uppercase;margin:3px 0}.kop p{font-size:9pt;margin:0}.doc-title{text-align:center;font-size:13pt;font-weight:bold;margin:8px 0 16px} table{width:100%;border-collapse:collapse;font-size:9pt} th,td{border:1px solid #777;padding:6px;vertical-align:top;color:#111!important;background:#fff!important} img{max-width:100%;} .biodata-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.biodata-item{border:1px solid #ccc;padding:8px}.biodata-label{font-size:8pt;color:#444;text-transform:uppercase}.biodata-value{font-weight:bold;margin-top:3px}.profile-photo{width:110px;height:140px;object-fit:cover;border:1px solid #aaa;float:right;margin:0 0 12px 16px}.auth-notice{border:1px solid #b91c1c;border-left:3px solid #b91c1c;padding:5px 7px;margin:-8px 0 10px;font-size:7.5pt;line-height:1.25;text-align:center;color:#b91c1c;font-weight:800;break-inside:avoid;page-break-inside:avoid;text-transform:uppercase}.print-footer{display:block!important;position:fixed;bottom:-15mm;left:0;right:0;text-align:center;font-size:7pt;background:white;border-top:1px solid #888;padding-top:3mm;z-index:10}.auth-text{display:block;max-width:100%;overflow-wrap:anywhere;text-align:center;color:#b91c1c;font-weight:800;text-transform:uppercase}.print-employee-profile{border:1px solid #777;padding:7px;margin:0 0 10px;break-inside:avoid;page-break-inside:avoid}.print-employee-profile h3{text-align:center;font-size:10pt;font-weight:bold;margin:0 0 5px}.print-employee-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:8.5pt}.print-employee-grid>div{overflow-wrap:anywhere} @media print{main{padding-bottom:0} tr, .biodata-item{break-inside:avoid;page-break-inside:avoid}}.rekap-meta-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;margin:8px 0;break-inside:avoid;page-break-inside:avoid}.rekap-meta-item{border:1px solid #777;padding:6px;min-width:0}.rekap-meta-label{font-size:7.5pt;color:#333;margin-bottom:3px}.rekap-meta-value{font-size:8.5pt;font-weight:bold;overflow-wrap:anywhere}.rekap-pegawai{display:flex;gap:10px;align-items:center;border:1px solid #777;padding:7px;margin:8px 0}.rekap-pegawai-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px;font-size:8.5pt}.rekap-pegawai img{width:58px;height:70px;object-fit:cover}.rekap-signatures{display:grid;grid-template-columns:1fr 1fr;gap:28mm;margin-top:14mm;page-break-inside:avoid;break-inside:avoid}.rekap-signature{min-width:0;text-align:center;display:flex;flex-direction:column;align-items:stretch}.rekap-signature .signature-heading{min-height:1.4em;font-weight:bold}.rekap-signature .signature-role{min-height:1.4em;font-size:9pt}.rekap-signature .sign-space{height:22mm}.rekap-signature .signature-name{border-top:1px solid #222;padding-top:3px;font-weight:bold;white-space:normal;overflow-wrap:anywhere}.rekap-evidence{font-size:8pt;margin:3px 0;overflow-wrap:anywhere}.rekap-evidence a{color:#0645ad;text-decoration:underline}.rekap-pegawai{break-inside:avoid} button,.no-print{display:none!important} .overflow-x-auto{overflow:visible!important} .rounded-xl,.rounded-2xl,.rounded-3xl{border-radius:0!important;box-shadow:none!important} @media print{.bg-slate-50 .grid{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:4px!important}.bg-slate-50 .grid>div{border:1px solid #777!important;padding:5px!important;min-width:0}.bg-slate-50 .grid p,.bg-slate-50 .grid span{margin:0!important;font-size:8pt!important;line-height:1.2!important}.bg-slate-50 .grid p:first-child{font-size:7pt!important;color:#444!important}.bg-slate-50{padding:5px!important;margin:5px 0!important}.doc-title{margin:5px 0 8px!important}} @media screen{body{padding:20px;max-width:900px;margin:auto}}
-        </style></head><body><header class="kop">${kop}</header><section class="auth-notice"><span class="auth-text">${escapeHTML(footer)}</span></section><h2 class="doc-title">${escapeHTML(title)}</h2><main>${finalBodyHtml}</main><script>window.onload=()=>{const imgs=[...document.images];Promise.all(imgs.map(i=>i.complete?Promise.resolve():new Promise(r=>{i.onload=r;i.onerror=r}))).then(()=>setTimeout(()=>window.print(),250));};<\/script></body></html>`);
+        </style></head><body><header class="kop">${kop}</header><section class="auth-notice"><span class="auth-text">${escapeHTML(footer)}</span></section><h2 class="doc-title">${escapeHTML(title)}</h2><main>${finalBodyHtml}</main><script>window.onload=()=>{const imgs=[...document.images];const waits=imgs.map(i=>i.complete&&i.naturalWidth>0?Promise.resolve():new Promise(r=>{const done=()=>r();i.onload=done;i.onerror=done;setTimeout(done,8000)}));Promise.all(waits).then(()=>setTimeout(()=>window.print(),600));};<\/script></body></html>`);
       w.document.close();
     }
     async function printElement(title, elementId) {
@@ -3433,17 +3459,35 @@
         }
         if (elementId === 'printable-rekap-kinerja-container') {
           const photoLinks = [...clone.querySelectorAll('a[data-report-photo-id]')];
-          await Promise.all(photoLinks.map(async link => {
-            try {
-              const result = await gasCall('getReportPhoto', {reportId: link.dataset.reportPhotoId});
-              const src = String(result?.foto || '');
-              if (!/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(src)) throw new Error('Foto tidak valid');
-              const img = document.createElement('img');
-              img.src = src; img.alt = 'Foto dokumentasi kegiatan';
-              img.style.cssText = 'width:80px;height:56px;max-width:80px;max-height:56px;object-fit:contain;border:1px solid #aaa;display:block;margin:auto';
-              link.replaceWith(img);
-            } catch (_) { link.replaceWith(document.createTextNode('Foto tidak dapat dimuat')); }
-          }));
+          // Foto cetak: ambil langsung dari server, retry hingga 3 kali, dan hindari cache Promise gagal/stale.
+          let photoIndex = 0;
+          const photoWorker = async () => {
+            while (photoIndex < photoLinks.length) {
+              const link = photoLinks[photoIndex++];
+              const reportId = String(link.dataset.reportPhotoId || '').trim();
+              let src = '';
+              if (reportId) {
+                for (let attempt = 0; attempt < 3 && !src; attempt++) {
+                  try {
+                    const result = await gasCall('getReportPhoto', {reportId});
+                    const candidate = String(result?.foto || '');
+                    if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(candidate)) src = candidate;
+                  } catch (err) {
+                    if (attempt === 2) console.warn('Foto cetak gagal setelah retry', reportId, err);
+                  }
+                }
+              }
+              if (src) {
+                const img = document.createElement('img');
+                img.src = src; img.alt = 'Foto dokumentasi kegiatan';
+                img.style.cssText = 'width:80px;height:56px;max-width:80px;max-height:56px;object-fit:contain;border:1px solid #aaa;display:block;margin:auto';
+                link.replaceWith(img);
+              } else {
+                link.replaceWith(document.createTextNode('Foto tidak dapat dimuat'));
+              }
+            }
+          };
+          await Promise.all(Array.from({length:Math.min(2,photoLinks.length)},photoWorker));
           const previewHeader = clone.querySelector(':scope > .flex.flex-col');
           if (previewHeader) previewHeader.remove();
           const repeatedSummary = clone.querySelector(':scope > .bg-slate-50');
@@ -4602,6 +4646,13 @@
         if (statusFilter !== 'Semua' && l.status !== statusFilter) return false;
         if (searchKey && !String(l.kegiatan || '').toLowerCase().includes(searchKey) && owner && !String(owner.nama || '').toLowerCase().includes(searchKey)) return false;
         return true;
+      }).sort((a,b) => {
+        // Prioritaskan laporan Pending (belum diverifikasi), lalu terbaru ke terlama.
+        const pendingDiff = (String(b.status || 'Pending') === 'Pending') - (String(a.status || 'Pending') === 'Pending');
+        if (pendingDiff) return pendingDiff;
+        const dateDiff = String(dateKeyISO(b.tanggal) || '').localeCompare(String(dateKeyISO(a.tanggal) || ''));
+        if (dateDiff) return dateDiff;
+        return String(b.jamMulai || '').localeCompare(String(a.jamMulai || ''));
       });
       filteredReports.forEach((l, index) => {
         const owner = dbUsers.find(u => u.id === l.userId);
@@ -4813,7 +4864,14 @@
         if (filterStatus !== 'Semua' && l.status !== filterStatus) return false;
         if (searchKey && !String(l.kegiatan || '').toLowerCase().includes(searchKey) && !String(l.output || '').toLowerCase().includes(searchKey) && !String(owner.nama || '').toLowerCase().includes(searchKey)) return false;
         return true;
-      }).sort((a,b) => String(b.tanggal || '').localeCompare(String(a.tanggal || '')));
+      }).sort((a,b) => {
+        // Prioritaskan laporan Pending (belum diverifikasi), lalu terbaru ke terlama.
+        const pendingDiff = (String(b.status || 'Pending') === 'Pending') - (String(a.status || 'Pending') === 'Pending');
+        if (pendingDiff) return pendingDiff;
+        const dateDiff = String(dateKeyISO(b.tanggal) || '').localeCompare(String(dateKeyISO(a.tanggal) || ''));
+        if (dateDiff) return dateDiff;
+        return String(b.jamMulai || '').localeCompare(String(a.jamMulai || ''));
+      });
       if (!rows.length) {
         tbody.innerHTML = '<tr><td colspan="8" class="p-6 text-center text-slate-400">Tidak ada laporan yang sesuai dengan filter pegawai, bulan, dan status.</td></tr>';
         return;
