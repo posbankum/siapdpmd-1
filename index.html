@@ -414,11 +414,11 @@
         <button id="pjlp-tab-btn-rekap-kinerja" onclick="switchPjlpTab('rekap-kinerja')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
           <i class="fa-solid fa-file-invoice"></i> Rekap Kinerja Bulanan
         </button>
-        <button id="pjlp-tab-btn-arsip" onclick="switchPjlpTab('arsip')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
-          <i class="fa-solid fa-folder-open"></i> Arsip Kepegawaian
-        </button>
         <button id="pjlp-tab-btn-final" onclick="switchPjlpTab('final')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
           <i class="fa-solid fa-award"></i> Penilaian Kinerja Final Tahunan
+        </button>
+        <button id="pjlp-tab-btn-arsip" onclick="switchPjlpTab('arsip')" class="px-4 py-2.5 rounded-xl hover:bg-slate-100 flex items-center gap-2 transition">
+          <i class="fa-solid fa-folder-open"></i> Arsip Kepegawaian
         </button>
       </div>
 
@@ -906,7 +906,13 @@
               <p class="text-xs text-slate-500">Lembar rekap presensi hadir, dinas luar, izin, dan sakit per bulan</p>
             </div>
             <div class="flex items-center gap-3 no-print">
-              <input type="date" id="filter-rekap-hadir-tanggal" aria-label="Filter tanggal rekap kehadiran" onchange="renderPjlpTables()" class="px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold bg-white"><select id="rekap-bulan-hadir-select" onchange="renderPjlpTables()" class="px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold bg-white">
+              <div class="flex flex-wrap items-center gap-2">
+                <label class="text-[10px] font-bold text-slate-500">Dari</label>
+                <input type="date" id="filter-rekap-hadir-dari" aria-label="Tanggal awal rekap kehadiran" onchange="renderPjlpTables()" class="px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold bg-white">
+                <label class="text-[10px] font-bold text-slate-500">Sampai</label>
+                <input type="date" id="filter-rekap-hadir-sampai" aria-label="Tanggal akhir rekap kehadiran" onchange="renderPjlpTables()" class="px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold bg-white">
+              </div>
+              <select id="rekap-bulan-hadir-select" onchange="renderPjlpTables()" class="px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold bg-white">
                 <option value="">Bulan berjalan</option>
               </select>
               <button onclick="printRekapHadir()" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs shadow-md transition flex items-center gap-2">
@@ -995,7 +1001,7 @@
                 <p class="font-bold text-slate-800 text-sm" id="rekap-kinerja-hari-kerja-count">—</p>
               </div>
               <div>
-                <p class="text-slate-400">Laporan Disetujui:</p>
+                <p class="text-slate-400">Laporan Disetujui (sesuai filter):</p>
                 <p id="rekap-disetujui-count" class="font-bold text-blue-600 text-sm">0 Laporan</p>
               </div>
               <div>
@@ -2911,9 +2917,21 @@
       return (rows || []).filter(row => { const key=dateKeyISO(row.tanggal); return (!from || key >= from) && (!to || key <= to); });
     }
     function countDpmDWorkdaysBetween(from, to) {
-      if (!from || !to || from > to) return 0;
-      const a=new Date(from+'T12:00:00'), b=new Date(to+'T12:00:00'); let count=0;
-      for (let d=new Date(a); d<=b; d.setDate(d.getDate()+1)) if (isDpmDWorkday(d)) count++;
+      // Hitung rentang inklusif lintas bulan/tahun menggunakan UTC agar tidak
+      // terpengaruh pergeseran timezone atau perubahan jam lokal.
+      const start = String(from || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      const end = String(to || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!start || !end || String(from) > String(to)) return 0;
+      let cursor = Date.UTC(Number(start[1]), Number(start[2])-1, Number(start[3]));
+      const finish = Date.UTC(Number(end[1]), Number(end[2])-1, Number(end[3]));
+      let count = 0;
+      for (; cursor <= finish; cursor += 86400000) {
+        const d = new Date(cursor);
+        const weekday = d.getUTCDay();
+        if (weekday === 0 || weekday === 6) continue; // Minggu/Sabtu
+        const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+        if (!isOfficialDayOff(key)) count++;
+      }
       return count;
     }
     function formatKinerjaDateRange(monthKey) {
@@ -2927,30 +2945,48 @@
       ensureMonthOptions();
       const monthAttendance = monthKeyFromSelect('rekap-bulan-hadir-select');
       const monthReports = monthKeyFromSelect('rekap-bulan-kinerja-select');
-      const attendanceRows = applyDateFilter(myAbsensi.filter(a => isInMonth(a.tanggal, monthAttendance)), 'filter-rekap-hadir-tanggal').sort((a,b) => `${dateKeyISO(a.tanggal)} ${a.jam}`.localeCompare(`${dateKeyISO(b.tanggal)} ${b.jam}`));
-      const reportRows = applyKinerjaDateRange(myLaporan.filter(r => isInMonth(r.tanggal, monthReports))).sort((a,b) => dateKeyISO(a.tanggal).localeCompare(dateKeyISO(b.tanggal)) || String(a.jamMulai||'').localeCompare(String(b.jamMulai||'')));
+      const attendanceFrom = document.getElementById('filter-rekap-hadir-dari')?.value || '';
+      const attendanceTo = document.getElementById('filter-rekap-hadir-sampai')?.value || '';
+      const hasAttendanceRange = !!(attendanceFrom || attendanceTo);
+      const attendanceStart = attendanceFrom || `${monthAttendance}-01`;
+      const [attendanceYear, attendanceMonthNum] = monthAttendance.split('-').map(Number);
+      const attendanceMonthEnd = `${monthAttendance}-${String(new Date(attendanceYear,attendanceMonthNum,0).getDate()).padStart(2,'0')}`;
+      const attendanceEnd = attendanceTo || attendanceMonthEnd;
+      const attendanceRangeValid = !hasAttendanceRange || attendanceStart <= attendanceEnd;
+      const attendanceRows = (attendanceRangeValid ? myAbsensi.filter(a => {
+        const key = dateKeyISO(a.tanggal);
+        return hasAttendanceRange ? key >= attendanceStart && key <= attendanceEnd : isInMonth(a.tanggal, monthAttendance);
+      }) : []).sort((a,b) => `${dateKeyISO(a.tanggal)} ${a.jam}`.localeCompare(`${dateKeyISO(b.tanggal)} ${b.jam}`));
+      const selectedKinerjaRange = getKinerjaDateRange();
+      const hasKinerjaDateRange = !!(selectedKinerjaRange.from || selectedKinerjaRange.to);
+      const reportBaseRows = hasKinerjaDateRange ? myLaporan : myLaporan.filter(r => isInMonth(r.tanggal, monthReports));
+      const reportRows = applyKinerjaDateRange(reportBaseRows).sort((a,b) => dateKeyISO(a.tanggal).localeCompare(dateKeyISO(b.tanggal)) || String(a.jamMulai||'').localeCompare(String(b.jamMulai||'')));
       const formatMonth = key => {
         const [y,m] = key.split('-').map(Number);
         return new Intl.DateTimeFormat('id-ID',{month:'long',year:'numeric',timeZone:'Asia/Makassar'}).format(new Date(y,m-1,1));
       };
       const periodHadir = document.getElementById('rekap-periode-hadir');
       const periodKinerja = document.getElementById('rekap-periode-kinerja');
-      if (periodHadir) periodHadir.textContent = formatMonth(monthAttendance);
+      if (periodHadir) {
+        const dateFmt = key => key ? new Intl.DateTimeFormat('id-ID',{day:'numeric',month:'long',year:'numeric',timeZone:'Asia/Makassar'}).format(new Date(key+'T12:00:00')) : '';
+        periodHadir.textContent = hasAttendanceRange ? (attendanceRangeValid ? `${dateFmt(attendanceStart)} s.d. ${dateFmt(attendanceEnd)}` : 'Rentang tanggal tidak valid') : formatMonth(monthAttendance);
+      }
       if (periodKinerja) periodKinerja.textContent = formatKinerjaDateRange(monthReports);
       const kinerjaWorkdayEl = document.getElementById('rekap-kinerja-hari-kerja-count');
       const kinerjaRange = getKinerjaDateRange();
       const [krYear,krMonth] = monthReports.split('-').map(Number);
       const monthStart = `${monthReports}-01`;
       const monthEnd = `${monthReports}-${String(new Date(krYear,krMonth,0).getDate()).padStart(2,'0')}`;
-      const rangeStart = kinerjaRange.from ? (kinerjaRange.from < monthStart ? monthStart : kinerjaRange.from) : monthStart;
-      const rangeEnd = kinerjaRange.to ? (kinerjaRange.to > monthEnd ? monthEnd : kinerjaRange.to) : monthEnd;
-      const rangeWorkdays = (kinerjaRange.from || kinerjaRange.to) ? countDpmDWorkdaysBetween(rangeStart,rangeEnd) : workdaysInMonth(monthReports);
+      // Jika rentang tanggal dipilih, hitung hari kerja pada rentang penuh (tidak dipotong bulan pilihan).
+      const rangeStart = kinerjaRange.from || monthStart;
+      const rangeEnd = kinerjaRange.to || monthEnd;
+      const rangeWorkdays = hasKinerjaDateRange ? countDpmDWorkdaysBetween(rangeStart,rangeEnd) : workdaysInMonth(monthReports);
       if (kinerjaWorkdayEl) kinerjaWorkdayEl.textContent = `${rangeWorkdays} Hari`;
       const hadirMasukDays = new Set(attendanceRows.filter(a => a.sesi === 'Masuk' && a.status === 'Hadir' && isDpmDWorkdayKey(dateKeyISO(a.tanggal))).map(a => dateKeyISO(a.tanggal))).size;
       const hadirCount = document.getElementById('rekap-hadir-count');
       const workdayCount = document.getElementById('rekap-hari-kerja-count');
       if (hadirCount) hadirCount.textContent = `${hadirMasukDays} Hari`;
-      if (workdayCount) workdayCount.textContent = `${workdaysInMonth(monthAttendance)} Hari`;
+      if (workdayCount) workdayCount.textContent = `${hasAttendanceRange && attendanceRangeValid ? countDpmDWorkdaysBetween(attendanceStart,attendanceEnd) : workdaysInMonth(monthAttendance)} Hari`;
       const statusPill = document.querySelector('#rekap-periode-hadir')?.closest('.bg-slate-50')?.querySelector('span');
       if (statusPill) {
         statusPill.textContent = attendanceRows.length ? 'Ada Data' : 'Belum Ada Data';
@@ -2959,7 +2995,8 @@
       const abBody = document.getElementById('rekap-hadir-month-body');
       if (abBody) {
         const [attYear, attMonth] = monthAttendance.split('-').map(Number);
-        const daysInSelectedMonth = new Date(attYear, attMonth, 0).getDate();
+        const tableStartKey = hasAttendanceRange && attendanceRangeValid ? attendanceStart : `${monthAttendance}-01`;
+        const tableEndKey = hasAttendanceRange && attendanceRangeValid ? attendanceEnd : `${monthAttendance}-${String(new Date(attYear,attMonth,0).getDate()).padStart(2,'0')}`;
         const recordsByDate = {};
         attendanceRows.forEach(a => {
           const key = dateKeyISO(a.tanggal);
@@ -2968,7 +3005,7 @@
           recordsByDate[key][String(a.sesi || '').toLowerCase() === 'masuk' ? 'masuk' : 'pulang'] = a;
         });
         const nowWita = new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Makassar'}));
-        const selectedIsCurrentMonth = monthAttendance === `${nowWita.getFullYear()}-${String(nowWita.getMonth()+1).padStart(2,'0')}`;
+        const todayWitaKey = `${nowWita.getFullYear()}-${String(nowWita.getMonth()+1).padStart(2,'0')}-${String(nowWita.getDate()).padStart(2,'0')}`;
         const holidayMap = holidayDates || {};
         const sessionCell = (record, isDayOff) => {
           if (!record) return `<span class="inline-block rounded-md px-2 py-1 text-[10px] font-bold ${isDayOff?'bg-amber-50 text-amber-700':'bg-rose-50 text-rose-700'}">${isDayOff?'Libur':'Absen / Tidak melakukan presensi'}</span>`;
@@ -2981,10 +3018,14 @@
           return `${time}${status}${late}${note}`;
         };
         const recapRows = [];
-        for (let d=1; d<=daysInSelectedMonth; d++) {
-          const date = new Date(attYear,attMonth-1,d);
-          if (selectedIsCurrentMonth && date > nowWita) continue;
-          const key = `${attYear}-${String(attMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        if (tableStartKey <= tableEndKey) {
+          let cursor = Date.UTC(Number(tableStartKey.slice(0,4)),Number(tableStartKey.slice(5,7))-1,Number(tableStartKey.slice(8,10)));
+          const finish = Date.UTC(Number(tableEndKey.slice(0,4)),Number(tableEndKey.slice(5,7))-1,Number(tableEndKey.slice(8,10)));
+          for (; cursor <= finish; cursor += 86400000) {
+          const utcDate = new Date(cursor);
+          const key = `${utcDate.getUTCFullYear()}-${String(utcDate.getUTCMonth()+1).padStart(2,'0')}-${String(utcDate.getUTCDate()).padStart(2,'0')}`;
+          if (key > todayWitaKey) continue;
+          const date = new Date(utcDate.getUTCFullYear(),utcDate.getUTCMonth(),utcDate.getUTCDate());
           const weekend = isWeekendDate(date);
           const holiday = holidayMap[key];
           const dayOff = weekend || !!holiday;
@@ -2992,12 +3033,15 @@
           const dateLabel = date.toLocaleDateString('id-ID',{day:'2-digit',month:'long',year:'numeric'});
           const rec = recordsByDate[key] || {};
           recapRows.push(`<tr class="${dayOff?'bg-amber-50/40':'hover:bg-slate-50'}"><td class="p-3 whitespace-nowrap font-semibold">${escapeHTML(dateLabel)}</td><td class="p-3 capitalize">${escapeHTML(dayLabel)}${holiday?`<div class="text-[9px] text-amber-700">${escapeHTML(holiday)}</div>`:weekend?'<div class="text-[9px] text-amber-700">Akhir pekan</div>':''}</td><td class="p-3">${sessionCell(rec.masuk,dayOff)}</td><td class="p-3">${sessionCell(rec.pulang,dayOff)}</td></tr>`);
+          }
         }
         abBody.innerHTML = recapRows.join('') || '<tr><td colspan="4" class="p-3 text-center text-slate-400">Belum ada data pada periode ini.</td></tr>';
       }
-      const approved = reportRows.filter(r => r.status === 'Disetujui').length;
+      // Ringkasan persetujuan wajib memakai reportRows yang sudah difilter
+      // berdasarkan tanggal Dari-Sampai, bukan seluruh bulan berjalan.
+      const approved = reportRows.filter(r => String(r.status || '').trim().toLowerCase() === 'disetujui').length;
       const approvedEl = document.getElementById('rekap-disetujui-count');
-      if (approvedEl) approvedEl.textContent = `${approved} dari ${reportRows.length} Laporan`;
+      if (approvedEl) approvedEl.textContent = `${approved} Laporan`;
       const warning = document.getElementById('rekap-approval-warning');
       const badge = document.getElementById('rekap-status-badge');
       const allApproved = reportRows.length > 0 && approved === reportRows.length;
@@ -3172,18 +3216,7 @@
       const pendingLabel = document.getElementById('chart-pending-count');
       if (pendingLabel) pendingLabel.innerText = `${pendingCount} Pending · ${rejectedCount} Ditolak`;
 
-      document.getElementById('rekap-disetujui-count').innerText = `${approvedCount} Laporan`;
-      const warningBanner = document.getElementById('rekap-approval-warning');
-      const statusBadge = document.getElementById('rekap-status-badge');
-      if (laporanBulanBerjalan.length > 0 && approvedCount === laporanBulanBerjalan.length) {
-        if (warningBanner) warningBanner.classList.add('hidden');
-        statusBadge.className = "inline-block px-2.5 py-1 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800";
-        statusBadge.innerText = "Disetujui Atasan (Siap Cetak)";
-      } else {
-        if (warningBanner) warningBanner.classList.remove('hidden');
-        statusBadge.className = "inline-block px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800";
-        statusBadge.innerText = "Menunggu Persetujuan Atasan";
-      }
+      // Ringkasan rekap kinerja telah diatur oleh renderMonthlyRecaps() memakai filter tanggal aktif.
 
       // Render My Laporan Table
       const tbody = document.getElementById('pjlp-table-body');
@@ -3342,7 +3375,17 @@
         const photo = currentUser.avatar ? `<img src="${escapeHTML(currentUser.avatar)}" alt="Foto pegawai">` : '';
         const safe = v => escapeHTML(v || '—');
         const profile = `<section class="rekap-pegawai">${photo}<div class="rekap-pegawai-details"><div><b>Nama Pegawai:</b> ${safe(currentUser.nama)}</div><div><b>NIK:</b> ${safe(currentUser.nik)}</div><div><b>Bidang/Sub Bagian Kerja:</b> ${safe(currentUser.bidang)}</div><div><b>Tugas / Jabatan Kontrak:</b> ${safe(currentUser.jabatan)}</div></div></section>`;
-        const meta = `<section class="rekap-meta-grid"><div class="rekap-meta-item"><div class="rekap-meta-label">Periode Rekap</div><div class="rekap-meta-value">${safe(periode)}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Total Hari Kerja</div><div class="rekap-meta-value">${safe(document.getElementById("rekap-kinerja-hari-kerja-count")?.textContent?.trim() || "—")}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Laporan Disetujui</div><div class="rekap-meta-value">${safe(approved)}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Nilai Kinerja</div><div class="rekap-meta-value">${safe(status)}</div></div></section>`;
+        const kinerjaRangeForPrint = getKinerjaDateRange();
+        const monthKeyForPrint = monthKeyFromSelect('rekap-bulan-kinerja-select');
+        const [printYear, printMonth] = monthKeyForPrint.split('-').map(Number);
+        const printMonthStart = `${monthKeyForPrint}-01`;
+        const printMonthEnd = `${monthKeyForPrint}-${String(new Date(printYear,printMonth,0).getDate()).padStart(2,'0')}`;
+        const printRangeStart = kinerjaRangeForPrint.from || printMonthStart;
+        const printRangeEnd = kinerjaRangeForPrint.to || printMonthEnd;
+        const printWorkdays = (kinerjaRangeForPrint.from || kinerjaRangeForPrint.to)
+          ? countDpmDWorkdaysBetween(printRangeStart, printRangeEnd)
+          : workdaysInMonth(monthKeyForPrint);
+        const meta = `<section class="rekap-meta-grid"><div class="rekap-meta-item"><div class="rekap-meta-label">Periode Rekap</div><div class="rekap-meta-value">${safe(periode)}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Total Hari Kerja</div><div class="rekap-meta-value">${safe(`${printWorkdays} Hari`)}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Laporan Disetujui</div><div class="rekap-meta-value">${safe(approved)}</div></div><div class="rekap-meta-item"><div class="rekap-meta-label">Nilai Kinerja</div><div class="rekap-meta-value">${safe(status)}</div></div></section>`;
         const bidangAsli = String(currentUser.bidang || '').trim();
         const bidangPegawai = bidangAsli.toLowerCase().replace(/\\s+/g, ' ');
         const verifikatorBidang = (dbUsers || []).find(u =>
@@ -3374,7 +3417,7 @@
       w.document.open();
       w.document.write(`<!doctype html><html lang="id"><head><meta charset="utf-8"><title>${escapeHTML(title)}</title><style>
         @page{size:A4 portrait;margin:12mm 12mm 24mm} body{font:11pt Arial,sans-serif;color:#111;background:#fff;margin:0} .kop{display:flex;align-items:center;gap:14px;border-bottom:4px double #111;padding-bottom:10px;margin-bottom:18px}.kop img{width:76px;height:76px;object-fit:contain;flex:0 0 76px}.kop img.print-logo-right{margin-left:10px}.kop .print-kop-text{flex:1;text-align:center}.kop h2{font-size:13pt;text-transform:uppercase;margin:0}.kop h1{font-size:15pt;text-transform:uppercase;margin:3px 0}.kop p{font-size:9pt;margin:0}.doc-title{text-align:center;font-size:13pt;font-weight:bold;margin:8px 0 16px} table{width:100%;border-collapse:collapse;font-size:9pt} th,td{border:1px solid #777;padding:6px;vertical-align:top;color:#111!important;background:#fff!important} img{max-width:100%;} .biodata-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.biodata-item{border:1px solid #ccc;padding:8px}.biodata-label{font-size:8pt;color:#444;text-transform:uppercase}.biodata-value{font-weight:bold;margin-top:3px}.profile-photo{width:110px;height:140px;object-fit:cover;border:1px solid #aaa;float:right;margin:0 0 12px 16px}.auth-notice{border:1px solid #b91c1c;border-left:3px solid #b91c1c;padding:5px 7px;margin:-8px 0 10px;font-size:7.5pt;line-height:1.25;text-align:center;color:#b91c1c;font-weight:800;break-inside:avoid;page-break-inside:avoid;text-transform:uppercase}.print-footer{display:block!important;position:fixed;bottom:-15mm;left:0;right:0;text-align:center;font-size:7pt;background:white;border-top:1px solid #888;padding-top:3mm;z-index:10}.auth-text{display:block;max-width:100%;overflow-wrap:anywhere;text-align:center;color:#b91c1c;font-weight:800;text-transform:uppercase}.print-employee-profile{border:1px solid #777;padding:7px;margin:0 0 10px;break-inside:avoid;page-break-inside:avoid}.print-employee-profile h3{text-align:center;font-size:10pt;font-weight:bold;margin:0 0 5px}.print-employee-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:8.5pt}.print-employee-grid>div{overflow-wrap:anywhere} @media print{main{padding-bottom:0} tr, .biodata-item{break-inside:avoid;page-break-inside:avoid}}.rekap-meta-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;margin:8px 0;break-inside:avoid;page-break-inside:avoid}.rekap-meta-item{border:1px solid #777;padding:6px;min-width:0}.rekap-meta-label{font-size:7.5pt;color:#333;margin-bottom:3px}.rekap-meta-value{font-size:8.5pt;font-weight:bold;overflow-wrap:anywhere}.rekap-pegawai{display:flex;gap:10px;align-items:center;border:1px solid #777;padding:7px;margin:8px 0}.rekap-pegawai-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px;font-size:8.5pt}.rekap-pegawai img{width:58px;height:70px;object-fit:cover}.rekap-signatures{display:grid;grid-template-columns:1fr 1fr;gap:28mm;margin-top:14mm;page-break-inside:avoid;break-inside:avoid}.rekap-signature{min-width:0;text-align:center;display:flex;flex-direction:column;align-items:stretch}.rekap-signature .signature-heading{min-height:1.4em;font-weight:bold}.rekap-signature .signature-role{min-height:1.4em;font-size:9pt}.rekap-signature .sign-space{height:22mm}.rekap-signature .signature-name{border-top:1px solid #222;padding-top:3px;font-weight:bold;white-space:normal;overflow-wrap:anywhere}.rekap-evidence{font-size:8pt;margin:3px 0;overflow-wrap:anywhere}.rekap-evidence a{color:#0645ad;text-decoration:underline}.rekap-pegawai{break-inside:avoid} button,.no-print{display:none!important} .overflow-x-auto{overflow:visible!important} .rounded-xl,.rounded-2xl,.rounded-3xl{border-radius:0!important;box-shadow:none!important} @media print{.bg-slate-50 .grid{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:4px!important}.bg-slate-50 .grid>div{border:1px solid #777!important;padding:5px!important;min-width:0}.bg-slate-50 .grid p,.bg-slate-50 .grid span{margin:0!important;font-size:8pt!important;line-height:1.2!important}.bg-slate-50 .grid p:first-child{font-size:7pt!important;color:#444!important}.bg-slate-50{padding:5px!important;margin:5px 0!important}.doc-title{margin:5px 0 8px!important}} @media screen{body{padding:20px;max-width:900px;margin:auto}}
-        </style></head><body><header class="kop">${kop}</header><section class="auth-notice"><span class="auth-text">${escapeHTML(footer)}</span></section><h2 class="doc-title">${escapeHTML(title)}</h2><main>${finalBodyHtml}</main><script>window.onload=()=>{const imgs=[...document.images];Promise.all(imgs.map(i=>i.complete?Promise.resolve():new Promise(r=>{i.onload=r;i.onerror=r}))).then(()=>setTimeout(()=>window.print(),250));};<\/script></body></html>`);
+        </style></head><body><header class="kop">${kop}</header><section class="auth-notice"><span class="auth-text">${escapeHTML(footer)}</span></section><h2 class="doc-title">${escapeHTML(title)}</h2><main>${finalBodyHtml}</main><script>window.onload=()=>{const imgs=[...document.images];const waits=imgs.map(i=>i.complete&&i.naturalWidth>0?Promise.resolve():new Promise(r=>{const done=()=>r();i.onload=done;i.onerror=done;setTimeout(done,8000)}));Promise.all(waits).then(()=>setTimeout(()=>window.print(),600));};<\/script></body></html>`);
       w.document.close();
     }
     async function printElement(title, elementId) {
@@ -3433,17 +3476,35 @@
         }
         if (elementId === 'printable-rekap-kinerja-container') {
           const photoLinks = [...clone.querySelectorAll('a[data-report-photo-id]')];
-          await Promise.all(photoLinks.map(async link => {
-            try {
-              const result = await gasCall('getReportPhoto', {reportId: link.dataset.reportPhotoId});
-              const src = String(result?.foto || '');
-              if (!/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(src)) throw new Error('Foto tidak valid');
-              const img = document.createElement('img');
-              img.src = src; img.alt = 'Foto dokumentasi kegiatan';
-              img.style.cssText = 'width:80px;height:56px;max-width:80px;max-height:56px;object-fit:contain;border:1px solid #aaa;display:block;margin:auto';
-              link.replaceWith(img);
-            } catch (_) { link.replaceWith(document.createTextNode('Foto tidak dapat dimuat')); }
-          }));
+          // Foto cetak: ambil langsung dari server, retry hingga 3 kali, dan hindari cache Promise gagal/stale.
+          let photoIndex = 0;
+          const photoWorker = async () => {
+            while (photoIndex < photoLinks.length) {
+              const link = photoLinks[photoIndex++];
+              const reportId = String(link.dataset.reportPhotoId || '').trim();
+              let src = '';
+              if (reportId) {
+                for (let attempt = 0; attempt < 3 && !src; attempt++) {
+                  try {
+                    const result = await gasCall('getReportPhoto', {reportId});
+                    const candidate = String(result?.foto || '');
+                    if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(candidate)) src = candidate;
+                  } catch (err) {
+                    if (attempt === 2) console.warn('Foto cetak gagal setelah retry', reportId, err);
+                  }
+                }
+              }
+              if (src) {
+                const img = document.createElement('img');
+                img.src = src; img.alt = 'Foto dokumentasi kegiatan';
+                img.style.cssText = 'width:80px;height:56px;max-width:80px;max-height:56px;object-fit:contain;border:1px solid #aaa;display:block;margin:auto';
+                link.replaceWith(img);
+              } else {
+                link.replaceWith(document.createTextNode('Foto tidak dapat dimuat'));
+              }
+            }
+          };
+          await Promise.all(Array.from({length:Math.min(2,photoLinks.length)},photoWorker));
           const previewHeader = clone.querySelector(':scope > .flex.flex-col');
           if (previewHeader) previewHeader.remove();
           const repeatedSummary = clone.querySelector(':scope > .bg-slate-50');
@@ -3517,11 +3578,24 @@
     function handlePrintRekapKinerja() {
       if (!currentUser) return;
       const selectedMonth = monthKeyFromSelect('rekap-bulan-kinerja-select');
-      const myLaporan = applyKinerjaDateRange(dbLaporan.filter(l => l.userId === currentUser.id && dateKeyISO(l.tanggal).slice(0,7) === selectedMonth));
+      const selectedRange = getKinerjaDateRange();
+      const hasSelectedRange = !!(selectedRange.from || selectedRange.to);
+      const allMyReports = dbLaporan.filter(l => l.userId === currentUser.id);
+      // Jika pegawai memilih rentang tanggal, jangan batasi lagi berdasarkan bulan dropdown.
+      // Batas yang tidak diisi mengikuti awal/akhir bulan terpilih agar filter parsial tetap konsisten.
+      const [selectedYear, selectedMonthNumber] = selectedMonth.split('-').map(Number);
+      const selectedMonthStart = `${selectedMonth}-01`;
+      const selectedMonthEnd = `${selectedMonth}-${String(new Date(selectedYear, selectedMonthNumber, 0).getDate()).padStart(2,'0')}`;
+      const rangeFrom = selectedRange.from || selectedMonthStart;
+      const rangeTo = selectedRange.to || selectedMonthEnd;
+      if (rangeFrom > rangeTo) { notify('Rentang tanggal tidak valid. Periksa kembali tanggal Dari dan Sampai.'); return; }
+      const myLaporan = hasSelectedRange
+        ? allMyReports.filter(l => { const key = dateKeyISO(l.tanggal); return key >= rangeFrom && key <= rangeTo; })
+        : allMyReports.filter(l => isInMonth(l.tanggal, selectedMonth));
       const approvedTotal = myLaporan.filter(l => l.status === 'Disetujui').length;
       if (myLaporan.length === 0) { notify('Tidak ada kegiatan pada rentang tanggal yang dipilih untuk dicetak.'); return; }
 
-      if (currentUser.role === 'PJLP' && (myLaporan.length === 0 || approvedTotal < myLaporan.length)) {
+      if (currentUser.role === 'PJLP' && approvedTotal < myLaporan.length) {
         notify('Peringatan: Rekap Kinerja Bulanan belum dapat dicetak karena laporan harian Anda belum sepenuhnya disetujui oleh Atasan / Verifikator Bidang.');
         return;
       }
@@ -4602,6 +4676,13 @@
         if (statusFilter !== 'Semua' && l.status !== statusFilter) return false;
         if (searchKey && !String(l.kegiatan || '').toLowerCase().includes(searchKey) && owner && !String(owner.nama || '').toLowerCase().includes(searchKey)) return false;
         return true;
+      }).sort((a,b) => {
+        // Prioritaskan laporan Pending (belum diverifikasi), lalu terbaru ke terlama.
+        const pendingDiff = (String(b.status || 'Pending') === 'Pending') - (String(a.status || 'Pending') === 'Pending');
+        if (pendingDiff) return pendingDiff;
+        const dateDiff = String(dateKeyISO(b.tanggal) || '').localeCompare(String(dateKeyISO(a.tanggal) || ''));
+        if (dateDiff) return dateDiff;
+        return String(b.jamMulai || '').localeCompare(String(a.jamMulai || ''));
       });
       filteredReports.forEach((l, index) => {
         const owner = dbUsers.find(u => u.id === l.userId);
@@ -4813,7 +4894,14 @@
         if (filterStatus !== 'Semua' && l.status !== filterStatus) return false;
         if (searchKey && !String(l.kegiatan || '').toLowerCase().includes(searchKey) && !String(l.output || '').toLowerCase().includes(searchKey) && !String(owner.nama || '').toLowerCase().includes(searchKey)) return false;
         return true;
-      }).sort((a,b) => String(b.tanggal || '').localeCompare(String(a.tanggal || '')));
+      }).sort((a,b) => {
+        // Prioritaskan laporan Pending (belum diverifikasi), lalu terbaru ke terlama.
+        const pendingDiff = (String(b.status || 'Pending') === 'Pending') - (String(a.status || 'Pending') === 'Pending');
+        if (pendingDiff) return pendingDiff;
+        const dateDiff = String(dateKeyISO(b.tanggal) || '').localeCompare(String(dateKeyISO(a.tanggal) || ''));
+        if (dateDiff) return dateDiff;
+        return String(b.jamMulai || '').localeCompare(String(a.jamMulai || ''));
+      });
       if (!rows.length) {
         tbody.innerHTML = '<tr><td colspan="8" class="p-6 text-center text-slate-400">Tidak ada laporan yang sesuai dengan filter pegawai, bulan, dan status.</td></tr>';
         return;
